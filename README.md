@@ -59,11 +59,7 @@ dataset_dir = mlops.dataset.download(
 
 ```bash
 cd prototype
-docker compose up -d --build   # ai-hub 기동
-```
-
-```bash
-curl http://localhost:8000/health   # {"status":"ok"}
+docker compose up -d --build   # ai-hub 기동 (.env 불필요 - 이 compose 파일은 환경변수를 쓰지 않는다)
 ```
 
 종료:
@@ -71,6 +67,31 @@ curl http://localhost:8000/health   # {"status":"ok"}
 ```bash
 docker compose down -v
 ```
+
+### 설치 확인 (반드시 순서대로 전부 확인한다)
+
+```bash
+# 1) AI Hub가 살아있는지
+curl -s http://localhost:8000/health
+# 기대값: {"status":"ok"}
+
+# 2) prototype_default 네트워크가 실제로 존재하는지
+docker network ls | grep prototype_default
+
+# 3) prizm-backend/infra 스택(Airflow/MLflow/MinIO)이 같은 네트워크에 있는지 -
+#    아래 컨테이너 이름들이 하나라도 안 뜨면 infra 쪽이 아직 안 떠 있거나
+#    다른 네트워크에 있는 것이다 (프로젝트 이름이 `prototype`이 아닌 경우 의심)
+docker network inspect prototype_default --format '{{range .Containers}}{{.Name}}{{"\n"}}{{end}}'
+# 기대값: ai-hub, minio, mlflow, airflow, postgres 컨테이너 이름들이 전부 보여야 한다
+
+# 4) 컨테이너 DNS로 서로 실제로 닿는지 (ai-hub 컨테이너 안에서 minio를 이름으로 찾기)
+docker exec $(docker ps -qf name=ai-hub) getent hosts minio
+# 실패하면(hosts 못 찾음) 네트워크 공유가 안 된 것 - infra 스택을 name: prototype으로
+# 띄웠는지, 두 스택을 같은 Docker 데몬(같은 호스트)에서 실행했는지 확인한다
+```
+
+넷 다 통과해야 정상 설치다. 1번만 통과하고 2~4번이 실패하면 AI Hub 자체는 떠 있지만
+`prizm-backend/infra` 스택과 네트워크가 분리된 상태라 실제 연동은 안 되는 것이다.
 
 ## 외부 컨테이너를 이 스택에 연동할 때 (PRIZM 편집 세션 등)
 
