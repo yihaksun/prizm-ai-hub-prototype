@@ -1,42 +1,13 @@
 name: prototype
 
 services:
-  # ── Object Storage (S3 호환) ─────────────────────────────────
-  # standalone 프로파일 전용 - prizm-backend와 통합할 때는 이 서비스들 대신
-  # prizm-backend/infra/docker-compose.opensource.yml이 MinIO/MLflow/Airflow를
-  # 책임진다 (name: prototype으로 프로젝트명을 고정해서 같은 prototype_default
-  # 네트워크를 공유하게 되어 있다). 이 파일은 그 경우 ai-hub 하나만 남는다 -
-  # `docker compose up -d --build`(profile 없이)가 기본으로 ai-hub만 띄우는 이유.
-  minio:
-    image: minio/minio:RELEASE.2024-10-13T13-34-11Z
-    command: server /data --console-address ":9001"
-    environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
-    ports:
-      - "9000:9000"
-      - "9001:9001"
-    volumes:
-      - minio_data:/data
-    profiles: ["standalone"]
-
-  minio-init:
-    image: minio/mc:RELEASE.2024-10-08T09-37-26Z
-    depends_on:
-      - minio
-    entrypoint: >
-      /bin/sh -c "
-      until mc alias set local http://minio:9000 minioadmin minioadmin; do sleep 2; done &&
-      mc mb -p local/mlops-assets &&
-      mc mb -p local/mlflow-artifacts &&
-      echo 'buckets ready'
-      "
-    profiles: ["standalone"]
-
   # ── AI Hub: Asset Key+Version -> S3 경로 Resolve ────────────
-  # PRIZM 자체 구성요소라 두 모드(standalone / prizm-backend 통합) 모두에서 기본으로 뜬다.
-  # MinIO에 직접 접근하지 않는(JSON 카탈로그만 다루는) 서비스라 minio-init을 기다릴
-  # 필요가 없다 - 어느 스택의 MinIO를 쓰든 이 서비스 자체는 그 시점을 몰라도 된다.
+  # PRIZM 자체 구성요소. Postgres/MinIO/MLflow/Airflow는 prizm-backend/infra/
+  # docker-compose.opensource.yml이 책임진다 - 이 파일은 그 스택 위에 얹는
+  # "나머지"(AI Hub, SDK, 런타임 베이스 이미지)만 담는다. 두 compose 파일 모두
+  # `name: prototype`으로 프로젝트명을 고정해서 같은 prototype_default 네트워크를
+  # 공유한다. MinIO에 직접 접근하지 않는(JSON 카탈로그만 다루는) 서비스라
+  # MinIO가 뜨는 순서를 기다릴 필요도 없다.
   ai-hub:
     build:
       context: ./ai-hub
@@ -45,78 +16,12 @@ services:
     volumes:
       - ai_hub_data:/data
 
-  # ── MLflow: Run/Metric/Artifact 조회 UI ─────────────────────
-  mlflow:
-    build:
-      context: ./mlflow
-    ports:
-      - "5050:5000"  # macOS 5000번은 ControlCenter(AirPlay)가 선점하는 경우가 많아 회피
-    environment:
-      AWS_ACCESS_KEY_ID: minioadmin
-      AWS_SECRET_ACCESS_KEY: minioadmin
-      AWS_DEFAULT_REGION: us-east-1
-      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
-    volumes:
-      - mlflow_data:/mlflow
-    depends_on:
-      minio-init:
-        condition: service_completed_successfully
-    command: >
-      mlflow server --host 0.0.0.0 --port 5000
-      --backend-store-uri sqlite:////mlflow/mlflow.db
-      --default-artifact-root s3://mlflow-artifacts/
-    profiles: ["standalone"]
-
-  # ── MLOps Core: Generic Notebook Executor (Airflow) ─────────
-  airflow:
-    build:
-      context: .
-      dockerfile: airflow/Dockerfile
-    ports:
-      - "8080:8080"
-    environment:
-      MLOPS_AI_HUB_URL: http://ai-hub:8000
-      MLOPS_S3_ENDPOINT: http://minio:9000
-      MLOPS_S3_ACCESS_KEY: minioadmin
-      MLOPS_S3_SECRET_KEY: minioadmin
-      MLOPS_BUCKET: mlops-assets
-      MLFLOW_TRACKING_URI: http://mlflow:5000
-      # MLflow 클라이언트(Notebook 내부)가 아티팩트를 S3(MinIO)에 직접 업로드할 때 필요
-      AWS_ACCESS_KEY_ID: minioadmin
-      AWS_SECRET_ACCESS_KEY: minioadmin
-      AWS_DEFAULT_REGION: us-east-1
-      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
-      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
-      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
-      # Portal이 REST API로 DAG를 트리거할 수 있도록 basic auth 활성화 + 고정 계정
-      AIRFLOW__API__AUTH_BACKENDS: "airflow.api.auth.backend.basic_auth"
-      # DockerOperator가 자식 컨테이너를 띄울 때 쓰는 값들
-      MLOPS_HOST_RUN_ROOT: ${HOST_PROJECT_DIR}/runs
-      MLOPS_DOCKER_NETWORK: prototype_default
-      MLOPS_BASE_IMAGE: prizm/runtime-base:v1
-    volumes:
-      - ./airflow/dags:/opt/airflow/dags
-      # PRIZM 백엔드가 papermill 실행 스냅샷(executed.ipynb)을 읽는 공유 폴더
-      - ./runs:/opt/airflow/mlops_run
-      # DockerOperator가 호스트 도커 데몬에 자식 컨테이너를 요청한다.
-      # 프로토타입 한정 - 운영에서는 KubernetesPodOperator를 쓴다.
-      - /var/run/docker.sock:/var/run/docker.sock
-    depends_on:
-      - ai-hub
-      - mlflow
-    command: >
-      bash -c "
-      airflow db init &&
-      (airflow users create --username admin --password admin --firstname Admin --lastname User --role Admin --email admin@example.com || true) &&
-      exec airflow standalone
-      "
-    profiles: ["standalone"]
-
   # ── PRIZM 편집 세션 런타임 베이스 이미지 (compose가 띄우진 않는다 - build 전용) ──
   # 이 서비스 자체는 `up`으로 절대 뜨지 않는다(profiles로 기본에서 제외). 목적은 오직
   # `docker compose --profile build build runtime-base` 한 줄로 prizm/runtime-base:v1을
   # 재현 가능하게 빌드하는 것 - env-builds/*/Dockerfile과 편집 세션 컨테이너가 이 이미지를
-  # 베이스로 쓰고, MLOPS_BASE_IMAGE(위 airflow 서비스 환경변수)도 이 태그를 가리킨다.
+  # 베이스로 쓰고, prizm-backend/infra의 MLOPS_BASE_IMAGE 환경변수도 이 태그(또는
+  # Docker Hub의 yihaksun/prizm-runtime-base:v1)를 가리킨다.
   runtime-base:
     build:
       context: .
@@ -124,52 +29,5 @@ services:
     image: prizm/runtime-base:v1
     profiles: ["build"]
 
-  # ── 자산 시딩 (1회성. `docker compose --profile seed run --rm seed`) ──
-  seed:
-    build:
-      context: .
-      dockerfile: airflow/Dockerfile
-    environment:
-      MLOPS_AI_HUB_URL: http://ai-hub:8000
-      MLOPS_S3_ENDPOINT: http://minio:9000
-      MLOPS_S3_ACCESS_KEY: minioadmin
-      MLOPS_S3_SECRET_KEY: minioadmin
-      MLOPS_BUCKET: mlops-assets
-    volumes:
-      - ./notebooks:/opt/seed/notebooks:ro
-      - ./seed:/opt/seed/scripts:ro
-    working_dir: /opt/seed/scripts
-    depends_on:
-      - ai-hub
-    entrypoint: ["python", "seed_assets.py"]
-    profiles: ["seed"]
-
-  # ── MLOps Portal: 자산 등록/검증/실행 트리거를 위한 시연용 UI ──
-  portal:
-    build:
-      context: .
-      dockerfile: portal/Dockerfile
-    ports:
-      - "8090:8090"
-    environment:
-      MLOPS_AI_HUB_URL: http://ai-hub:8000
-      MLOPS_S3_ENDPOINT: http://minio:9000
-      MLOPS_S3_ACCESS_KEY: minioadmin
-      MLOPS_S3_SECRET_KEY: minioadmin
-      MLOPS_BUCKET: mlops-assets
-      AIRFLOW_URL: http://airflow:8080
-      AIRFLOW_USER: admin
-      AIRFLOW_PASSWORD: admin
-      MLFLOW_URL: http://mlflow:5000
-    volumes:
-      - ./notebooks:/app/notebooks:ro
-    depends_on:
-      - ai-hub
-      - airflow
-      - mlflow
-    profiles: ["standalone"]
-
 volumes:
-  minio_data:
   ai_hub_data:
-  mlflow_data:
