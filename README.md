@@ -120,11 +120,18 @@ demo_yolov8_training.ipynb  ──▶  PASS  ──▶  mlops.code.upload() ─�
 
 ## 실행 방법 (로컬 Docker Compose)
 
+이 저장소는 두 가지 모드로 쓸 수 있다 — **독립 데모**(이 문서의 원래 시나리오, 전체 스택을
+혼자서 다 띄움)와 **prizm-backend 통합**(오픈소스 인프라는 prizm-backend의
+`infra/docker-compose.opensource.yml`이 맡고, 여기는 PRIZM 고유 컴포넌트인 AI Hub만 얹음).
+`profiles`로 나뉘어 있어서 기본값(`docker compose up`, profile 미지정)은 **AI Hub만** 뜬다.
+
+### 독립 데모 (원래 3가지 핵심 주장을 혼자서 시연)
+
 ```bash
 cd prototype
 
 # 1) 이미지 빌드 + 전체 서비스(MinIO/AI Hub/MLflow/Airflow/Portal) 기동
-docker compose up -d --build
+docker compose --profile standalone up -d --build
 
 # 2) Airflow 뜰 때까지 대기 (최초 기동은 DB 초기화 때문에 1~2분 소요)
 docker compose logs -f airflow   # 로그가 잠잠해지면 Ctrl+C
@@ -150,8 +157,24 @@ open http://localhost:9001   # MinIO Console - 실제 저장된 오브젝트 (mi
 종료/초기화:
 
 ```bash
-docker compose down -v   # 컨테이너 + 볼륨(데이터) 전부 삭제, 처음부터 다시 데모 가능
+docker compose --profile standalone down -v   # 컨테이너 + 볼륨(데이터) 전부 삭제, 처음부터 다시 데모 가능
 ```
+
+### prizm-backend 통합 (오픈소스 인프라는 backend 쪽이 책임짐)
+
+`prizm-backend/infra/docker-compose.opensource.yml`이 Postgres 백엔드 Airflow + MLflow + MinIO를
+먼저 띄운 상태여야 한다 (그쪽 `infra/README.md` 참고). 그 스택이 `name: prototype`으로 프로젝트
+이름을 고정해두기 때문에, 이 저장소도 같은 이름(`name: prototype`, 최상단에 명시)을 쓰고 있어서
+자동으로 같은 `prototype_default` 네트워크를 공유한다 — 컨테이너 이름(`ai-hub`, `minio` 등)으로
+서로를 바로 찾는다.
+
+```bash
+cd prototype
+docker compose up -d --build   # profile 없음 → ai-hub만 뜬다 (minio/mlflow/airflow/portal은 안 뜸)
+```
+
+두 스택을 동시에 `standalone` profile로 전부 띄우면 Airflow(8080)/MLflow(5050)/MinIO(9000-9001)
+포트가 backend 쪽과 충돌하니, 이 모드에서는 `--profile standalone`을 절대 쓰지 않는다.
 
 ## 외부 컨테이너를 이 스택에 연동할 때 (PRIZM 편집 세션 등)
 
@@ -159,12 +182,15 @@ docker compose down -v   # 컨테이너 + 볼륨(데이터) 전부 삭제, 처�
 바깥에서 `docker run`으로 JupyterLab 컨테이너를 직접 띄운다. `airflow` 서비스처럼 compose가 관리하는
 컨테이너가 아니므로, **compose 파일에 없어도 아래 요구사항은 그대로 적용된다**:
 
-- `--network prototype_default` 로 이 스택의 네트워크에 join해야 한다. Compose가 디렉터리명
-  (`prototype`) 기준으로 자동 생성하는 네트워크가 `prototype_default`이고, `ai-hub`/`minio` 같은
-  컨테이너 DNS 이름은 이 네트워크 안에서만 풀린다. 안 붙이면 컨테이너 안에서 `localhost:8000`/
-  `localhost:9000`이 자기 자신을 가리켜서 AI Hub/MinIO 연결이 조용히 실패한다 — 이미 `airflow`
-  서비스는 `MLOPS_DOCKER_NETWORK: prototype_default` 환경변수로 이 값을 받아 쓰고 있지만, compose
-  밖에서 별도로 `docker run`을 호출하는 쪽(PRIZM 백엔드 등)은 이 플래그를 직접 넘겨야 한다.
+- `--network prototype_default` 로 이 스택의 네트워크에 join해야 한다. 이 파일과
+  `prizm-backend/infra/docker-compose.opensource.yml` 둘 다 최상단에 `name: prototype`을
+  명시해서 프로젝트 이름을 고정해뒀고, Compose는 그 이름 기준으로 `prototype_default` 네트워크를
+  만든다 (디렉터리 이름이 뭐든 상관없다 - 예전엔 디렉터리명에 의존했지만 지금은 아니다).
+  `ai-hub`/`minio` 같은 컨테이너 DNS 이름은 이 네트워크 안에서만 풀린다. 안 붙이면 컨테이너 안에서
+  `localhost:8000`/`localhost:9000`이 자기 자신을 가리켜서 AI Hub/MinIO 연결이 조용히 실패한다 —
+  이미 `airflow` 서비스는 `MLOPS_DOCKER_NETWORK: prototype_default` 환경변수로 이 값을 받아 쓰고
+  있지만, compose 밖에서 별도로 `docker run`을 호출하는 쪽(PRIZM 백엔드 등)은 이 플래그를 직접
+  넘겨야 한다.
 - 컨테이너를 root로 띄운다면(베이스 이미지에 non-root 유저가 없는 경우) JupyterLab에
   `--allow-root`가 필요하다.
 - 리버스 프록시 경로 뒤에서 서빙한다면 `--ServerApp.base_url=/<prefix>/`를 반드시 붙여야 한다 —

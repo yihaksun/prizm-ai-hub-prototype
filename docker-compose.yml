@@ -1,5 +1,12 @@
+name: prototype
+
 services:
   # ── Object Storage (S3 호환) ─────────────────────────────────
+  # standalone 프로파일 전용 - prizm-backend와 통합할 때는 이 서비스들 대신
+  # prizm-backend/infra/docker-compose.opensource.yml이 MinIO/MLflow/Airflow를
+  # 책임진다 (name: prototype으로 프로젝트명을 고정해서 같은 prototype_default
+  # 네트워크를 공유하게 되어 있다). 이 파일은 그 경우 ai-hub 하나만 남는다 -
+  # `docker compose up -d --build`(profile 없이)가 기본으로 ai-hub만 띄우는 이유.
   minio:
     image: minio/minio:RELEASE.2024-10-13T13-34-11Z
     command: server /data --console-address ":9001"
@@ -11,6 +18,7 @@ services:
       - "9001:9001"
     volumes:
       - minio_data:/data
+    profiles: ["standalone"]
 
   minio-init:
     image: minio/mc:RELEASE.2024-10-08T09-37-26Z
@@ -23,8 +31,12 @@ services:
       mc mb -p local/mlflow-artifacts &&
       echo 'buckets ready'
       "
+    profiles: ["standalone"]
 
   # ── AI Hub: Asset Key+Version -> S3 경로 Resolve ────────────
+  # PRIZM 자체 구성요소라 두 모드(standalone / prizm-backend 통합) 모두에서 기본으로 뜬다.
+  # MinIO에 직접 접근하지 않는(JSON 카탈로그만 다루는) 서비스라 minio-init을 기다릴
+  # 필요가 없다 - 어느 스택의 MinIO를 쓰든 이 서비스 자체는 그 시점을 몰라도 된다.
   ai-hub:
     build:
       context: ./ai-hub
@@ -32,9 +44,6 @@ services:
       - "8000:8000"
     volumes:
       - ai_hub_data:/data
-    depends_on:
-      minio-init:
-        condition: service_completed_successfully
 
   # ── MLflow: Run/Metric/Artifact 조회 UI ─────────────────────
   mlflow:
@@ -56,6 +65,7 @@ services:
       mlflow server --host 0.0.0.0 --port 5000
       --backend-store-uri sqlite:////mlflow/mlflow.db
       --default-artifact-root s3://mlflow-artifacts/
+    profiles: ["standalone"]
 
   # ── MLOps Core: Generic Notebook Executor (Airflow) ─────────
   airflow:
@@ -100,6 +110,7 @@ services:
       (airflow users create --username admin --password admin --firstname Admin --lastname User --role Admin --email admin@example.com || true) &&
       exec airflow standalone
       "
+    profiles: ["standalone"]
 
   # ── PRIZM 편집 세션 런타임 베이스 이미지 (compose가 띄우진 않는다 - build 전용) ──
   # 이 서비스 자체는 `up`으로 절대 뜨지 않는다(profiles로 기본에서 제외). 목적은 오직
@@ -156,6 +167,7 @@ services:
       - ai-hub
       - airflow
       - mlflow
+    profiles: ["standalone"]
 
 volumes:
   minio_data:
