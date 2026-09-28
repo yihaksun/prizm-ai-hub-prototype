@@ -1,0 +1,16 @@
+[project]
+name = "prizm-sdk-prototype"
+version = "0.1.0"
+description = "MLOps 코어모듈(Prizm) 프로토타입 SDK - Asset Key+Version 기반 Dataset/Model/Code 접근"
+requires-python = ">=3.9"
+dependencies = [
+    "requests>=2.31",
+    "boto3>=1.34",
+]
+
+[tool.setuptools]
+packages = ["prizm"]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"

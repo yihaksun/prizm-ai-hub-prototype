@@ -1,0 +1,17 @@
+# 머신별 설정 - .env.example을 복사해서 본인 경로로 채운다
+.env
+
+# 실행 결과물 (papermill 실행 스냅샷 등 - docker-compose가 볼륨으로 마운트)
+runs/
+edit-sessions/
+
+# 이전 작업 스냅샷 - git 히스토리가 이제 이 역할을 대신한다
+.backup-*/
+
+# 자산별 파생 빌드 로그 (Dockerfile/requirements.txt는 재현용으로 유지)
+env-builds/*/build.log
+
+__pycache__/
+*.pyc
+
+.DS_Store

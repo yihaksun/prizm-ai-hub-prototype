@@ -1,0 +1,163 @@
+services:
+  # ── Object Storage (S3 호환) ─────────────────────────────────
+  minio:
+    image: minio/minio:RELEASE.2024-10-13T13-34-11Z
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+
+  minio-init:
+    image: minio/mc:RELEASE.2024-10-08T09-37-26Z
+    depends_on:
+      - minio
+    entrypoint: >
+      /bin/sh -c "
+      until mc alias set local http://minio:9000 minioadmin minioadmin; do sleep 2; done &&
+      mc mb -p local/mlops-assets &&
+      mc mb -p local/mlflow-artifacts &&
+      echo 'buckets ready'
+      "
+
+  # ── AI Hub: Asset Key+Version -> S3 경로 Resolve ────────────
+  ai-hub:
+    build:
+      context: ./ai-hub
+    ports:
+      - "8000:8000"
+    volumes:
+      - ai_hub_data:/data
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
+
+  # ── MLflow: Run/Metric/Artifact 조회 UI ─────────────────────
+  mlflow:
+    build:
+      context: ./mlflow
+    ports:
+      - "5050:5000"  # macOS 5000번은 ControlCenter(AirPlay)가 선점하는 경우가 많아 회피
+    environment:
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+      AWS_DEFAULT_REGION: us-east-1
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+    volumes:
+      - mlflow_data:/mlflow
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
+    command: >
+      mlflow server --host 0.0.0.0 --port 5000
+      --backend-store-uri sqlite:////mlflow/mlflow.db
+      --default-artifact-root s3://mlflow-artifacts/
+
+  # ── MLOps Core: Generic Notebook Executor (Airflow) ─────────
+  airflow:
+    build:
+      context: .
+      dockerfile: airflow/Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      MLOPS_AI_HUB_URL: http://ai-hub:8000
+      MLOPS_S3_ENDPOINT: http://minio:9000
+      MLOPS_S3_ACCESS_KEY: minioadmin
+      MLOPS_S3_SECRET_KEY: minioadmin
+      MLOPS_BUCKET: mlops-assets
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      # MLflow 클라이언트(Notebook 내부)가 아티팩트를 S3(MinIO)에 직접 업로드할 때 필요
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+      AWS_DEFAULT_REGION: us-east-1
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
+      # Portal이 REST API로 DAG를 트리거할 수 있도록 basic auth 활성화 + 고정 계정
+      AIRFLOW__API__AUTH_BACKENDS: "airflow.api.auth.backend.basic_auth"
+      # DockerOperator가 자식 컨테이너를 띄울 때 쓰는 값들
+      MLOPS_HOST_RUN_ROOT: ${HOST_PROJECT_DIR}/runs
+      MLOPS_DOCKER_NETWORK: prototype_default
+      MLOPS_BASE_IMAGE: prizm/runtime-base:v1
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      # PRIZM 백엔드가 papermill 실행 스냅샷(executed.ipynb)을 읽는 공유 폴더
+      - ./runs:/opt/airflow/mlops_run
+      # DockerOperator가 호스트 도커 데몬에 자식 컨테이너를 요청한다.
+      # 프로토타입 한정 - 운영에서는 KubernetesPodOperator를 쓴다.
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      - ai-hub
+      - mlflow
+    command: >
+      bash -c "
+      airflow db init &&
+      (airflow users create --username admin --password admin --firstname Admin --lastname User --role Admin --email admin@example.com || true) &&
+      exec airflow standalone
+      "
+
+  # ── PRIZM 편집 세션 런타임 베이스 이미지 (compose가 띄우진 않는다 - build 전용) ──
+  # 이 서비스 자체는 `up`으로 절대 뜨지 않는다(profiles로 기본에서 제외). 목적은 오직
+  # `docker compose --profile build build runtime-base` 한 줄로 prizm/runtime-base:v1을
+  # 재현 가능하게 빌드하는 것 - env-builds/*/Dockerfile과 편집 세션 컨테이너가 이 이미지를
+  # 베이스로 쓰고, MLOPS_BASE_IMAGE(위 airflow 서비스 환경변수)도 이 태그를 가리킨다.
+  runtime-base:
+    build:
+      context: .
+      dockerfile: runtime/base/Dockerfile
+    image: prizm/runtime-base:v1
+    profiles: ["build"]
+
+  # ── 자산 시딩 (1회성. `docker compose --profile seed run --rm seed`) ──
+  seed:
+    build:
+      context: .
+      dockerfile: airflow/Dockerfile
+    environment:
+      MLOPS_AI_HUB_URL: http://ai-hub:8000
+      MLOPS_S3_ENDPOINT: http://minio:9000
+      MLOPS_S3_ACCESS_KEY: minioadmin
+      MLOPS_S3_SECRET_KEY: minioadmin
+      MLOPS_BUCKET: mlops-assets
+    volumes:
+      - ./notebooks:/opt/seed/notebooks:ro
+      - ./seed:/opt/seed/scripts:ro
+    working_dir: /opt/seed/scripts
+    depends_on:
+      - ai-hub
+    entrypoint: ["python", "seed_assets.py"]
+    profiles: ["seed"]
+
+  # ── MLOps Portal: 자산 등록/검증/실행 트리거를 위한 시연용 UI ──
+  portal:
+    build:
+      context: .
+      dockerfile: portal/Dockerfile
+    ports:
+      - "8090:8090"
+    environment:
+      MLOPS_AI_HUB_URL: http://ai-hub:8000
+      MLOPS_S3_ENDPOINT: http://minio:9000
+      MLOPS_S3_ACCESS_KEY: minioadmin
+      MLOPS_S3_SECRET_KEY: minioadmin
+      MLOPS_BUCKET: mlops-assets
+      AIRFLOW_URL: http://airflow:8080
+      AIRFLOW_USER: admin
+      AIRFLOW_PASSWORD: admin
+      MLFLOW_URL: http://mlflow:5000
+    volumes:
+      - ./notebooks:/app/notebooks:ro
+    depends_on:
+      - ai-hub
+      - airflow
+      - mlflow
+
+volumes:
+  minio_data:
+  ai_hub_data:
+  mlflow_data:

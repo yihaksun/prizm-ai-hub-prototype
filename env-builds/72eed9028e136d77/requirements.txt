@@ -1,0 +1,2 @@
+six
+tabulate==0.9.0

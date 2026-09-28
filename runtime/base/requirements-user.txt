@@ -1,0 +1,12 @@
+# 사용자 환경(site-packages)에 설치되는 ML 스택.
+# papermill은 여기 없다 - 도구 venv(/opt/prizm/tools)에 설치된다.
+# 사용자가 코드 자산에 추가하는 패키지도 이 환경에 설치된다.
+ipykernel==6.29.5
+requests==2.32.3
+boto3==1.34.162
+scikit-learn==1.5.2
+pandas==2.2.3
+joblib==1.4.2
+mlflow==2.16.2
+ultralytics==8.3.28
+numpy<2.0
