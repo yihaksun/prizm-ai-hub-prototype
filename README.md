@@ -93,6 +93,32 @@ docker exec $(docker ps -qf name=ai-hub) getent hosts minio
 넷 다 통과해야 정상 설치다. 1번만 통과하고 2~4번이 실패하면 AI Hub 자체는 떠 있지만
 `prizm-backend/infra` 스택과 네트워크가 분리된 상태라 실제 연동은 안 되는 것이다.
 
+### 초기 데이터 시딩 (데모 자산 등록)
+
+새로 띄운 AI Hub는 카탈로그가 완전히 비어있다 - 아무 데이터셋/모델/노트북도 등록돼 있지 않아서,
+DAG를 트리거해도 "asset not found"로 바로 막힌다. 최소한 데모 자산(iris/wine/door_defect
+데이터셋, yolov8n 베이스 가중치, 노트북 4개)을 등록해야 파이프라인을 실제로 돌려볼 수 있다.
+
+```bash
+docker compose --profile build build runtime-base   # 아직 안 했다면
+docker compose --profile seed run --rm seed
+```
+
+등록되는 것: `demo.iris`/`demo.wine`/`demo.door_defect`(데이터셋), `demo.yolov8n_base`(모델),
+`demo.iris_training`/`demo.wine_training`/`demo.door_defect_yolov8_training`/
+`demo._live_before_asis`(노트북). 회사 실데이터로 교체하려면 `seed/seed_assets.py`를 참고해서
+같은 방식(`prizm.dataset.upload()`/`prizm.model.upload()`/`prizm.code.upload()`)으로 직접
+등록하면 된다.
+
+파이프라인이 실제로 끝까지 도는지 확인:
+
+```bash
+docker exec <airflow 컨테이너> airflow dags trigger mlops_notebook_executor \
+  --conf '{"code_key": "demo.iris_training", "code_version": "v1"}'
+docker exec <airflow 컨테이너> airflow dags list-runs -d mlops_notebook_executor -o plain
+# state 컬럼이 success가 될 때까지 몇 초 간격으로 재실행해 확인한다
+```
+
 ## 외부 컨테이너를 이 스택에 연동할 때 (PRIZM 편집 세션 등)
 
 `prizm-backend`의 편집 세션 기능(코드 자산을 JupyterLab로 여는 기능)은 이 `docker-compose.yml`
@@ -151,5 +177,7 @@ prototype/
 ├── ai-hub/                 # Asset Key+Version -> S3 경로 Resolve (FastAPI)
 ├── runtime/base/           # 편집 세션 런타임 베이스 이미지 (prizm/runtime-base:v1)
 ├── env-builds/             # 자산별 파생 빌드(FROM prizm/runtime-base:v1 + requirements.txt)
+├── notebooks/               # 초기 시딩용 데모 노트북 (iris/wine/door_defect)
+├── seed/seed_assets.py      # 초기 자산 등록 스크립트 (`--profile seed run --rm seed`)
 └── docker-compose.yml
 ```

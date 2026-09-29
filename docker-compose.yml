@@ -29,5 +29,29 @@ services:
     image: prizm/runtime-base:v1
     profiles: ["build"]
 
+  # ── 초기 자산 시딩 (1회성. `docker compose --profile seed run --rm seed`) ──
+  # runtime-base 이미지를 그대로 재사용한다 (sklearn/ultralytics/SDK가 이미 다 있음) -
+  # 먼저 `docker compose --profile build build runtime-base`로 빌드하거나
+  # Docker Hub(yihaksun/prizm-runtime-base:v1)에서 pull 해둬야 한다.
+  # 아래 MLOPS_S3_* 값은 로컬 MinIO 기준 기본값이다 - 회사 S3를 쓴다면 이 네 값을
+  # 실제 엔드포인트/자격증명으로 바꾸거나 `docker compose run -e MLOPS_S3_ENDPOINT=... seed`
+  # 처럼 오버라이드한다.
+  seed:
+    image: prizm/runtime-base:v1
+    environment:
+      MLOPS_AI_HUB_URL: http://ai-hub:8000
+      MLOPS_S3_ENDPOINT: http://minio:9000
+      MLOPS_S3_ACCESS_KEY: minioadmin
+      MLOPS_S3_SECRET_KEY: minioadmin
+      MLOPS_BUCKET: mlops-assets
+    volumes:
+      - ./notebooks:/opt/seed/notebooks:ro
+      - ./seed:/opt/seed/scripts:ro
+    working_dir: /opt/seed/scripts
+    depends_on:
+      - ai-hub
+    entrypoint: ["python", "seed_assets.py"]
+    profiles: ["seed"]
+
 volumes:
   ai_hub_data:
